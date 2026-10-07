@@ -10,8 +10,10 @@ when there is no display, e.g. from cron).
 
 Commands:
   scan [-o FILE]       Fetch every search in config/searches.json, write unseen listings as JSON
-                       (default data/run/new.json).
-  detail URL           Print a listing's full text (description, attributes) as JSON.
+       [--last DAYS]   (default data/run/new.json). --last backfills everything posted in the
+                       last 1/2/3/7 days instead of stopping at the first already-seen page.
+  list [FILE]          Print one compact line per listing in FILE (default data/run/new.json).
+  detail URL...        Print each listing's full text (description, attributes) as JSON.
   mark-seen ID...      Record listing IDs as processed so later scans skip them.
   notify FILE          Post matches (JSON list) to the Discord webhook in DISCORD_WEBHOOK_URL.
 """
@@ -66,7 +68,7 @@ class Browser:
         await self._browser.close()
         await self._pw.stop()
 
-    async def get(self, url: str) -> str:
+    async def get(self, url: str, wait_for: str | None = None) -> str:
         await self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         # Wait for the Cloudflare interstitial ("Just a moment" / "Trenutek") to clear.
         for _ in range(30):
@@ -76,6 +78,11 @@ class Browser:
             await self._page.wait_for_timeout(1000)
         else:
             raise RuntimeError(f"Cloudflare challenge did not clear for {url}")
+        if wait_for:
+            try:
+                await self._page.wait_for_selector(wait_for, timeout=15_000)
+            except Exception:
+                pass  # caller decides what a missing element means
         html = await self._page.content()
         await self._page.wait_for_timeout(1500)  # be polite between requests
         return html
@@ -121,13 +128,13 @@ def parse_results(html: str, search_name: str) -> tuple[list[dict], str | None]:
 
 
 def cmd_scan(args):
-    found = asyncio.run(scan())
+    found = asyncio.run(scan(args.last))
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(found, ensure_ascii=False, indent=1))
     print(f"[scan] {len(found)} new listing(s) written to {args.out}")
 
 
-async def scan() -> list[dict]:
+async def scan(last: int | None = None) -> list[dict]:
     searches = json.loads(SEARCHES.read_text())
     seen = load_seen()
     found: dict[str, dict] = {}
@@ -138,48 +145,58 @@ async def scan() -> list[dict]:
             if "?" in url:
                 url, query = url.split("?", 1)
                 query = "?" + query
+            if last:
+                query += f"&last={last}"
             url = url + query
-            for n in range(1, s.get("max_pages", 3) + 1):
+            # The site's age filter bounds a backfill, so allow many more pages.
+            max_pages = 40 if last else s.get("max_pages", 3)
+            for n in range(1, max_pages + 1):
                 listings, next_url = parse_results(await browser.get(url), s["name"])
                 new = [l for l in listings if l["id"] not in seen and l["id"] not in found]
                 for l in new:
                     found[l["id"]] = l
                 print(f"[scan] {s['name']} p{n}: {len(listings)} listings, {len(new)} new")
                 # Results are newest-first, so a page with nothing new means we've caught up.
-                if not next_url or not new:
+                if not next_url or (not new and not last):
                     break
                 url = next_url if "?" in next_url else next_url + query
     return list(found.values())
 
 
-async def fetch_one(url: str) -> str:
+async def fetch_many(urls: list[str]) -> list[str]:
     async with Browser() as browser:
-        return await browser.get(url)
+        pages = []
+        for u in urls:
+            html = await browser.get(u, wait_for=".description-details")
+            if "description-details" not in html:
+                html = await browser.get(u, wait_for=".description-details")  # one retry
+            pages.append(html)
+        return pages
 
 
-def cmd_detail(args):
-    html = asyncio.run(fetch_one(args.url))
+def parse_detail(url: str, html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "button"]):
         tag.decompose()
     main = soup.select_one(".description-details") or soup.select_one("#content")
     if not main:
-        sys.exit("could not find the listing description on the page")
+        return {"id": listing_id(url), "url": url, "error": "could not find the listing description"}
     for tag in main.select("[class*=slick], [class*=gallery], [class*=slider]"):
         tag.decompose()
-    body = text(main)
-    json.dump(
-        {
-            "id": listing_id(args.url),
-            "url": args.url,
-            "title": text(soup.select_one("h1")),
-            "text": body[:12000],
-        },
-        sys.stdout,
-        ensure_ascii=False,
-        indent=1,
-    )
-    print()
+    return {"id": listing_id(url), "url": url, "title": text(soup.select_one("h1")), "text": text(main)[:6000]}
+
+
+def cmd_detail(args):
+    pages = asyncio.run(fetch_many(args.urls))
+    for url, html in zip(args.urls, pages):
+        print(json.dumps(parse_detail(url, html), ensure_ascii=False, indent=1))
+
+
+def cmd_list(args):
+    listings = json.loads(Path(args.file).read_text())
+    print(f"{len(listings)} listing(s)")
+    for l in listings:
+        print(" | ".join([l["id"], l["type"], l["price_text"], l["title"], ", ".join(l["facts"]), l["summary"], l["url"]]))
 
 
 def cmd_mark_seen(args):
@@ -200,7 +217,10 @@ def cmd_notify(args):
     hook = os.environ.get("DISCORD_WEBHOOK_URL")
     if not hook:
         sys.exit("DISCORD_WEBHOOK_URL is not set (put it in .env)")
-    matches = json.loads(Path(args.file).read_text())
+    # Card data comes from the scan output so the model only has to supply id + reason.
+    scanned = Path(args.scan)
+    by_id = {l["id"]: l for l in json.loads(scanned.read_text())} if scanned.exists() else {}
+    matches = [{**m, **by_id.get(m["id"], {}), "reason": m.get("reason", "")} for m in json.loads(Path(args.file).read_text())]
     for m in matches:
         embed = {
             "title": m["title"][:256],
@@ -214,7 +234,7 @@ def cmd_notify(args):
             ],
         }
         if m.get("image"):
-            embed["thumbnail"] = {"url": m["image"]}
+            embed["image"] = {"url": m["image"]}  # full-width banner under the text
         payload = {"username": "Nepremičninko", "embeds": [embed]}
         req = urllib.request.Request(
             hook,
@@ -230,16 +250,21 @@ def main():
     sub = ap.add_subparsers(required=True)
     sc = sub.add_parser("scan")
     sc.add_argument("-o", "--out", default=str(ROOT / "data" / "run" / "new.json"))
+    sc.add_argument("--last", type=int, choices=[1, 2, 3, 7], help="backfill listings posted in the last N days")
     sc.set_defaults(fn=cmd_scan)
+    ls = sub.add_parser("list")
+    ls.add_argument("file", nargs="?", default=str(ROOT / "data" / "run" / "new.json"))
+    ls.set_defaults(fn=cmd_list)
     d = sub.add_parser("detail")
-    d.add_argument("url")
+    d.add_argument("urls", nargs="+")
     d.set_defaults(fn=cmd_detail)
     m = sub.add_parser("mark-seen")
     m.add_argument("ids", nargs="*")
     m.add_argument("--from-file", help="JSON list of listings (e.g. scan output)")
     m.set_defaults(fn=cmd_mark_seen)
     n = sub.add_parser("notify")
-    n.add_argument("file", help="JSON list of matches: scan entries plus a 'reason' field")
+    n.add_argument("file", help='JSON list of matches: [{"id": ..., "reason": ...}]')
+    n.add_argument("--scan", default=str(ROOT / "data" / "run" / "new.json"), help="scan output to take card data from")
     n.set_defaults(fn=cmd_notify)
     args = ap.parse_args()
     args.fn(args)
