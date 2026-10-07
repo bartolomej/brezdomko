@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(nepremicnine-scout)",
+      "Bash(xvfb-run -a uv run scripts/nep.py *)",
+      "Bash(uv run scripts/nep.py *)",
+      "Read",
+      "Edit(data/run/**)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}
