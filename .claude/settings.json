@@ -2,8 +2,8 @@
   "permissions": {
     "allow": [
       "Skill(nepremicnine-scout)",
-      "Bash(xvfb-run -a uv run scripts/nep.py *)",
-      "Bash(uv run scripts/nep.py *)",
+      "Bash(xvfb-run -a uv run .claude/skills/nepremicnine-scout/nep.py *)",
+      "Bash(uv run .claude/skills/nepremicnine-scout/nep.py *)",
       "Read",
       "Edit(data/run/**)"
     ],

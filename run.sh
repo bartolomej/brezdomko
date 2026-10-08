@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Headless scheduled run of the nepremicnine-scout skill. Invoked by cron / systemd.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")"
 export PATH="$HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 mkdir -p logs
 
 # Without a webhook every run would re-evaluate the same listings, so don't start.
 grep -q '^DISCORD_WEBHOOK_URL=https://discord' .env 2>/dev/null || { echo "DISCORD_WEBHOOK_URL missing in .env" >&2; exit 1; }
+
+[ -f config/criteria.md ] || { echo "config/criteria.md missing (copy config/criteria.example.md)" >&2; exit 1; }
 
 # Skip if a previous run is still going.
 exec 9>logs/.lock

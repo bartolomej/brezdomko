@@ -30,7 +30,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[3]  # repo root (.claude/skills/<name>/nep.py)
 SEARCHES = ROOT / "config" / "searches.json"
 SEEN = ROOT / "data" / "seen.json"
 BASE = "https://www.nepremicnine.net"
