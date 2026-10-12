@@ -5,7 +5,7 @@
       "Bash(xvfb-run -a uv run .claude/skills/nepremicnine-scout/nep.py *)",
       "Bash(uv run .claude/skills/nepremicnine-scout/nep.py *)",
       "Read",
-      "Edit(data/run/**)"
+      "Edit(data/*/run/**)"
     ],
     "deny": [
       "WebFetch",

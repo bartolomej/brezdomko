@@ -1,5 +1,6 @@
-.env
 logs/
 data/
 __pycache__/
-config/criteria.md
+# Alerts hold webhooks and personal requirements; only the template is committed.
+config/alerts/*
+!config/alerts/example/
